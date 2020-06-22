@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+import argparse
+import subprocess
+import shlex
+
+def main(argv):
+	parser = argparse.ArgumentParser()
+
+	subparsers = parser.add_subparsers(help='sub-command help', dest='sub_command', metavar='{command}')
+
+	parser_new = subparsers.add_parser('create', aliases=['new'],
+		help='create a new container')
+	parser_new.set_defaults(func=cmd_create)
+
+	parser_start = subparsers.add_parser('start', help='start a container')
+	parser_start.set_defaults(func=cmd_start)
+
+	parser_stop = subparsers.add_parser('stop', help='stop a container')
+	parser_stop.set_defaults(func=cmd_stop)
+
+	parser_delete = subparsers.add_parser('delete', aliases=['rm'], help='delete a container')
+	parser_delete.set_defaults(func=cmd_delete)
+
+	parser_open = subparsers.add_parser('open', help='open a shell in a container')
+	parser_open.set_defaults(func=cmd_open)
+
+	parser_list = subparsers.add_parser('list', aliases=['ls'], help='list all containers')
+	parser_list.set_defaults(func=cmd_list)
+
+	for p in (parser_new, parser_start, parser_stop, parser_delete, parser_open):
+		p.add_argument('container_name', metavar='container-name')
+	#
+
+	for p in (parser_new, parser_start, parser_stop, parser_delete):
+		p.add_argument('-v' ,'--verbose', action='store_true')
+	#
+
+	parser_new.add_argument('-i', '--image', metavar='NAME', default='ubuntu:20.04',
+		help='image name to use as a base (default: %(default)s)')
+	parser_new.add_argument('-s', '--shared-dir', metavar='PATH', type=existing_dir,
+		help='a directory on the host to share with the container')
+	parser_new.add_argument('--no-default-user', action='store_true', help='don\'t create a default user')
+
+	parser_delete.add_argument('-f', '--force', action='store_true', help='delete container even if running')
+
+	parser_open.add_argument('-r', '--root', action='store_true', help='open a shell as the root user')
+
+	args = parser.parse_args(argv[1:])
+	return args.func(args)
+#
+
+def cmd_create(args):
+	# create a docker container with a given volume and image
+	# create a new container user using 'useradd' with the host user's uid
+
+	# the '--init' is because of this: https://blog.phusion.nl/2015/01/20/docker-and-the-pid-1-zombie-reaping-problem/
+	# the '-t' flag is required to get a proper shell (https://github.com/moby/moby/issues/8631)
+	options = ['--init', '-t', '--name', args.container_name, '-di']
+	if args.shared_dir is not None:
+		options.extend(['--volume', '{}:/docker-volume'.format(args.shared_dir)])
+	#
+
+	command = ['/bin/sh']
+
+	(uid, _) = get_real_user_id()
+	if uid is not 0:
+		uid = str(uid)
+	#
+
+	try:
+		run_cmd(['docker', 'pull', args.image], verbose=args.verbose)
+		run_cmd(['docker', 'run'] + options + [args.image] + command, verbose=args.verbose)
+		if uid is not None and not args.no_default_user:
+			# add a user with the same uid as the host user
+			# this makes shared volumes simpler
+			username = 'user'
+			run_cmd(['docker', 'exec', args.container_name, 'adduser', '--disabled-password',
+				'--gecos' ,'', username, '--uid', uid])
+			print('User \'{}\' created inside container with uid {}'.format(username, uid))
+		#
+	except subprocess.CalledProcessError:
+		return 1
+	#	
+
+	return 0
+#
+
+def cmd_start(args):
+	# start the docker container
+	try:
+		run_cmd(['docker', 'start', args.container_name], verbose=args.verbose)
+	except subprocess.CalledProcessError:
+		return 1
+	#	
+
+	return 0
+#
+
+def cmd_stop(args):
+	# stop the docker container
+	try:
+		run_cmd(['docker', 'kill', args.container_name], verbose=args.verbose)
+	except subprocess.CalledProcessError:
+		return 1
+	#	
+
+	return 0
+#
+
+def cmd_delete(args):
+	# delete the docker container
+	try:
+		if args.force:
+			run_cmd(['docker', 'kill', args.container_name], verbose=args.verbose)
+		#
+		run_cmd(['docker', 'rm', args.container_name], verbose=args.verbose)
+	except subprocess.CalledProcessError:
+		return 1
+	#	
+
+	return 0
+#
+
+def cmd_open(args):
+	# open a shell in a docker container, optionally with the user's id
+	options = ['-it']
+	if args.root == False:
+		(uid, gid) = get_real_user_id()
+		options.extend(['--user', '{}:{}'.format(int(uid), int(gid))])
+	#
+
+	try:
+		subprocess.run(['docker', 'exec'] + options + [args.container_name, '/bin/bash'], check=True)
+	except subprocess.CalledProcessError:
+		return 1
+	#	
+
+	return 0
+#
+
+def cmd_list(args):
+	# list all docker containers
+	try:
+		run_cmd(['docker', 'container', 'ls', '-a'], verbose=True)
+	except subprocess.CalledProcessError:
+		return 1
+	#	
+
+	return 0
+#
+
+def existing_dir(path):
+    if not os.path.isdir(path):
+        raise argparse.ArgumentTypeError('The directory path is not valid')
+	#
+    return path
+#
+
+def get_real_user_id():
+	# try to get the user id, even when running under sudo
+	uid = os.getenv('SUDO_UID')
+	gid = os.getenv('SUDO_GID')
+
+	if uid is not None and gid is not None:
+		return (int(uid), int(gid))
+	#
+
+	return (os.getuid(), os.getgid())
+#
+
+def run_cmd(cmd, verbose=False):
+	subprocess_args = {'check':True, 'stdout':subprocess.PIPE, 'stderr':subprocess.STDOUT}
+	cmd_str = ' '.join(shlex.quote(x) for x in cmd)
+
+	if verbose:
+		# print the command that we're running
+		print('Running: {}'.format(cmd_str))
+	#
+
+	try:
+		p = subprocess.run(cmd, **subprocess_args)
+	except subprocess.CalledProcessError as e:
+		if not verbose:
+			# if we didn't print it earlier, we should print it now
+			print('Running: {}'.format(cmd_str))
+		#
+
+		print(e.output.decode('utf-8'), end='', file=sys.stderr)
+		raise
+	#
+
+	if verbose:
+		print(p.stdout.decode('utf-8'), end='')
+	#
+#
+
+if __name__ == '__main__':
+	exit(main(sys.argv))
+#
