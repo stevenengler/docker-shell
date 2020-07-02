@@ -77,8 +77,8 @@ def cmd_create(args):
 			# add a user with the same uid as the host user
 			# this makes shared volumes simpler
 			username = 'user'
-			run_cmd(['docker', 'exec', args.container_name, 'adduser', '--disabled-password',
-				'--gecos' ,'', username, '--uid', uid])
+			run_cmd(['docker', 'exec', args.container_name, 'useradd', '--create-home',
+				'--uid', uid, username])
 			print('User \'{}\' created inside container with uid {}'.format(username, uid))
 		#
 	except subprocess.CalledProcessError:
@@ -132,8 +132,10 @@ def cmd_open(args):
 		options.extend(['--user', '{}:{}'.format(int(uid), int(gid))])
 	#
 
+	cmd = ['/bin/bash', '-c', 'cd "$HOME" && exec /bin/bash']
+
 	try:
-		subprocess.run(['docker', 'exec'] + options + [args.container_name, '/bin/bash'], check=True)
+		subprocess.run(['docker', 'exec'] + options + [args.container_name] + cmd, check=True)
 	except subprocess.CalledProcessError:
 		return 1
 	#	
