@@ -58,7 +58,7 @@ def cmd_create(args):
 
 	# the '--init' is because of this: https://blog.phusion.nl/2015/01/20/docker-and-the-pid-1-zombie-reaping-problem/
 	# the '-t' flag is required to get a proper shell (https://github.com/moby/moby/issues/8631)
-	options = ['--init', '-t', '--name', args.container_name, '-di']
+	options = ['--init', '-t', '--name', args.container_name, '-di', '--hostname', args.container_name]
 	if args.shared_dir is not None:
 		options.extend(['--volume', '{}:/docker-volume'.format(args.shared_dir)])
 	#
